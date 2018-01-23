@@ -155,7 +155,7 @@ def recall_rate(data1,data2):
 #--------------------------------------------------------------------------------
 #主程序
 #def main():
-data=openfile('data/上证.xls')
+data=openfile('data/深证.xls')
 t=3
 da,traindata,testdata=produce_train_test_data(data,t)
 p=da['values']
