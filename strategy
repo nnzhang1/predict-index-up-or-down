@@ -1,0 +1,200 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import math
+from EMD import EMD
+import datetime
+from scipy import stats as ss
+from scipy.optimize import curve_fit
+from sklearn.linear_model import LinearRegression
+#-------------------------------------------------------------------------------------
+#将一条时间序列分解为IMF和residue,然后再分为高频、低频、residue三类，r是趋势项，IMF1是高频，IMF2是低频
+def Fine_to_coarse(data):
+    emd=EMD()
+    emd.extrema_detection = "parabol"
+    IMFs = emd.emd(data)
+    r=IMFs[-1]
+    da=np.zeros((len(IMFs)-1,len(data)))
+    t_test=[]
+    for i in range(0,len(IMFs)-1):
+        da[i,:]=sum(IMFs[0:i+1])
+        t_test.append(ss.ttest_1samp(da[i],0))
+    me=[]
+    for j in range(len(t_test)):
+        me.append(t_test[j].pvalue)
+    me=np.array(me)
+    a=np.where(me<0.1)[0][0]
+    IMF1=sum(IMFs[0:a])
+    IMF2=sum(IMFs[a:len(IMFs)-1])
+    return r,IMF1,IMF2
+#-------------------------------------------------------------------------------------------
+#预测IMF2和residue,发现在预测下一个点的数据时，前面10个点形成线性关系，所以大部分打算采用线性回归预测
+def linear_pre(da):
+    pre=[]
+    for i in range(len(da)-5):
+        data=da[i:i+5]
+        model=LinearRegression()
+        x=np.arange(len(data))
+        x=x.reshape(len(data),1)
+        model.fit(x,data)
+        R=model.score(x,data)
+        if R>0.99:
+            pre.append(model.predict(len(data)))
+        else:
+            xx=np.arange(len(data)-1)
+            xx=xx.reshape(len(data)-1,1)
+            diff_data=np.diff(data)
+            model.fit(xx,diff_data)
+            pre_diff=model.predict(len(data)+1)
+            pre.append(data[-1]+pre_diff)
+    return pre
+#----------------------------------------------------------------------------------------
+#r是趋势项，deg是多项式拟合的自由度，step是预测的步长    
+def r_pred(r,deg,step):
+    x = np.arange(1, len(r)+1, 1)
+    z1 = np.polyfit(x,r,deg)
+    # 生成多项式对象
+    p1 = np.poly1d(z1)
+    plt.plot(p1(x),label='fitting values')
+    plt.plot(r,label='residues')
+    x1=np.arange(x.max(), x.max()+step, 1)
+    r_pre=p1(x1)
+    return r_pre
+#---------------------------------------------------------------------------------------
+#粗粒化低频和residue的加和生成的序列
+def Coarse_grained(data,n):
+    redata=np.zeros(int(np.floor(len(data)/n)))
+    for i in range(int(np.floor(len(data)/n))):
+        redata[i]=data[i*n]
+    return redata##找到IMF2最近的sin模式数据,寻找所有的极小值
+def find_small(data):
+    small=[]
+    for k in range(1,len(data)-1):
+        if data[k]<data[k-1] and data[k]<data[k+1]:
+            small.append(k)
+    small_last=max(small)
+    return small_last
+#---------------------------------------------------------------------------------------
+#寻找最近的极大值
+def find_big(data):
+    big=[]
+    for k in range(1,len(data)-1):
+        if data[k]>data[k-1] and data[k]>data[k+1]:
+            big.append(k)
+    big_last=max(big)
+    return big_last
+#----------------------------------------------------------------------------------
+def find_zero(data):
+    zeros=[]
+    for k in range(1,len(data)-1):
+        if data[k]/data[k+1]<0:
+            zeros.append(k)
+    zero_last=max(zeros)
+    return zero_last
+#--------------------------------------------------------------------------------
+def pre_up_down(data,guji,ll):
+    score=0
+    for j in range(len(data)-ll):
+        if np.sign(data[j+ll]-data[j])==np.sign(guji[j+ll]-data[j]):
+           score=score+1 
+    return score/(len(data)-ll)
+#---------------------------------------------------------------------------------
+def pre_up_down_more_step(data,guji,ll):
+    score=0
+    for j in range(len(data)-ll):
+        if np.sign(data[j+ll]-data[j])==np.sign(guji[j+1]-data[j]):
+           score=score+1 
+    return score/(len(data)-ll) 
+#-----------------------------------------------------------------------------------  
+def find_not_normal(data,n):
+    point=[]
+    for i in range(len(data)-n-1):
+        if np.sign(data[i+n]-data[i])!=np.sign(data[i+n+1]-data[i+1]):
+            point.append(i-1)
+    return point
+#----------------------------------------------------------------------------------------
+def daoshu(data):
+    d=np.zeros(len(data)-1)
+    for i in range(len(data)-1):
+        d[i]=data[i+1]-data[i]
+    return d
+#-----------------------------------------------------------------------------------
+
+#---------------------------------------------------------------------------------
+#主程序
+'''打开数据'''
+df=pd.read_excel('data/上证.xls')
+jijin=pd.read_excel('data/zz5.xls')
+df=df.drop(df[np.isnan(df['收盘价'].values)].index)
+data=df['收盘价']
+'''打算从2017年1月3号开始回测，如果预测下周为涨即买入，如果预测为不涨不跌则继续持有，如果预测为跌则卖出，计算收益率'''
+data=np.array(data)
+traindata=data[:-700]
+testdata=data[-700:]
+#def strategy(data,testdata):
+data=traindata[-200:]
+#print(len(data))
+money=[]
+buy=[]
+buy_time=[]
+sell=[]
+sell_time=[]
+cha=[]
+ju=0
+jz=[]
+data1=data
+stock=[]
+a=10000/data1[-1]
+stock.append(a)
+jilu=[data1[-1]]
+private_account=0
+for i in range(int(len(testdata))):
+    for j in range(20):
+        try:
+            r,IMF1,IMF2=Fine_to_coarse(data1)
+            break
+        except IndexError:
+            data1=data1[1:]
+    ll=5
+    guji=r+IMF2
+    score=pre_up_down(data1,guji,ll)
+    print(score)
+    if len(stock)==1 and stock[0]==a:
+        if score>=0.8:
+            d=daoshu(guji)
+            zero=find_zero(d)
+            if -0.5<=d[-1]<=0.5 and d[-1]<d[-2]<d[-3]:
+                sell.append(data1[-1])
+                sell_time.append(i)
+                private_account=stock[0]*data1[-1]
+                del stock[0]
+            
+    else: 
+        if score>=0.8:
+            d=daoshu(guji)
+            zero=find_zero(d)
+            if -1<=d[-1]<=1 and d[-1]>d[-2]>d[-3]:
+                if private_account!=0:
+                    jilu.append(data1[-1])
+                    buy.append(data1[-1])
+                    buy_time.append(i)
+                    stock.append(private_account*3/7/data1[-1])
+                    private_account=private_account*4/7
+            elif -1<=d[-1]<=1 and d[-1]<d[-2]<d[-3]:
+                num_del=0
+                if stock!=[]:
+                    for ii in range(len(buy)):
+                        if data1[-1]/buy[ii-num_del]-1>0.01:
+                            sell.append(data1[-1])
+                            sell_time.append(i)
+                            cha.append((data1[-1]-buy[0])/buy[0]*100)
+                            private_account=private_account+stock[ii-num_del]*data1[-1]
+                            del buy[ii-num_del]
+                            del stock[ii-num_del]
+                            num_del=num_del+1
+    money.append(data1[-1]*sum(stock)+private_account)
+    data1=np.hstack((data[i+1:],testdata[:i+1]))
+da=np.hstack((traindata[-1],testdata[:-1]))
+tr=da*10000/da[0]
+plt.plot(money)
+plt.plot(tr)
